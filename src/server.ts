@@ -1,6 +1,6 @@
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
-import { createNotificationWorker } from "./lib/queue.js";
+import { createNotificationWorker } from "./workers/notification.worker.js";
 import { redisConnection } from "./lib/redis.js";
 import { prisma } from "./lib/prisma.js";
 

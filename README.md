@@ -81,12 +81,38 @@ npm run prisma:generate
 npm run prisma:migrate
 ```
 
-### 5. Iniciar o Servidor em Modo Desenvolvimento
+### 5. Iniciar a Aplicação
+
+#### Modo Monolítico / Desenvolvimento Local (API + Worker Embutido)
 ```bash
 npm run dev
 ```
+
+#### Modo Desacoplado / Produção (Microsserviços)
+Execute o servidor HTTP Fastify e os workers BullMQ em processos ou contêineres separados:
+```bash
+# Terminal 1: API Gateway & Ingestão
+npm start
+
+# Terminal 2: Worker de Despacho & Processamento em Segundo Plano
+npm run worker
+```
 O servidor estará disponível em: `http://localhost:3333`
 Documentação OpenAPI / Swagger UI: `http://localhost:3333/docs`
+
+---
+
+## 📬 Adaptadores de Envio & Resiliência (DLQ)
+
+A camada de consumo executa através de adaptadores especializados:
+- **E-mail (`EmailAdapter`):** Envio simulado estruturado no formato Nodemailer com validação de formato e IDs rastreáveis.
+- **Webhook (`WebhookAdapter`):** Disparo HTTP POST nativo com controle de timeout configurável via `AbortController`, headers de rastreio (`X-Notification-Id`, `X-Timestamp`) e tratamento de erros de rede.
+- **SMS & Push (`SmsAdapter`, `PushAdapter`):** Validação de formato E.164 e tokens de registro de dispositivo.
+
+### Dead Letter Queue (DLQ) & Política de Retentativas
+1. Falhas temporárias (ex.: timeout transitório, indisponibilidade momentânea) ativam o **exponential backoff** automático com 3 retentativas programadas.
+2. Quando o número máximo de tentativas é esgotado, o evento é automaticamente isolado na fila **`notification-dlq`** com carimbo de auditoria `MOVED_TO_DLQ`.
+3. Os jobs da DLQ podem ser reprocessados a qualquer momento através da função `replayDlqJob(dlqJobId)` com prioridade alta.
 
 ---
 

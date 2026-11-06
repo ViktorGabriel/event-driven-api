@@ -1,8 +1,9 @@
-import { Queue, Worker, Job } from "bullmq";
+import { Queue, Job } from "bullmq";
 import { redisConnection } from "./redis.js";
 import { prisma } from "./prisma.js";
 
 export const NOTIFICATION_QUEUE_NAME = "notification-dispatch";
+export const NOTIFICATION_DLQ_NAME = "notification-dlq";
 
 export interface NotificationJobData {
   notificationId: string;
@@ -14,6 +15,13 @@ export interface NotificationJobData {
   metadata?: Record<string, unknown> | null;
 }
 
+export interface DlqJobData extends NotificationJobData {
+  originalJobId?: string;
+  failedAt: string;
+  attemptsMade: number;
+  lastError: string;
+}
+
 const priorityMap: Record<string, number> = {
   CRITICAL: 1,
   HIGH: 2,
@@ -21,6 +29,7 @@ const priorityMap: Record<string, number> = {
   LOW: 4,
 };
 
+// Main Dispatch Queue
 export const notificationQueue = new Queue<NotificationJobData>(NOTIFICATION_QUEUE_NAME, {
   connection: redisConnection,
   defaultJobOptions: {
@@ -30,13 +39,22 @@ export const notificationQueue = new Queue<NotificationJobData>(NOTIFICATION_QUE
       delay: 2000,
     },
     removeOnComplete: {
-      age: 3600, // keep completed jobs for 1 hour
+      age: 3600,
       count: 1000,
     },
     removeOnFail: {
-      age: 86400, // keep failed jobs for 24 hours
+      age: 86400,
       count: 5000,
     },
+  },
+});
+
+// Dead Letter Queue (DLQ) for permanently failed or retry-exhausted events
+export const notificationDlq = new Queue<DlqJobData>(NOTIFICATION_DLQ_NAME, {
+  connection: redisConnection,
+  defaultJobOptions: {
+    removeOnComplete: false,
+    removeOnFail: false,
   },
 });
 
@@ -71,102 +89,96 @@ export async function enqueueNotificationBulk(
   return notificationQueue.addBulk(bulkJobs);
 }
 
-export function createNotificationWorker() {
-  const worker = new Worker<NotificationJobData>(
-    NOTIFICATION_QUEUE_NAME,
-    async (job: Job<NotificationJobData>) => {
-      const { notificationId, channel, recipient } = job.data;
+export async function sendToDeadLetterQueue(
+  job: Job<NotificationJobData>,
+  error: Error,
+): Promise<Job<DlqJobData>> {
+  const dlqData: DlqJobData = {
+    ...job.data,
+    originalJobId: job.id,
+    failedAt: new Date().toISOString(),
+    attemptsMade: job.attemptsMade,
+    lastError: error.message,
+  };
 
-      // Mark as PROCESSING
-      await prisma.notification.update({
-        where: { id: notificationId },
-        data: {
-          status: "PROCESSING",
-          auditLogs: {
-            create: {
-              fromStatus: "QUEUED",
-              toStatus: "PROCESSING",
-              event: "DISPATCH_STARTED",
-              details: { jobId: job.id, attempt: job.attemptsMade + 1 },
-            },
-          },
-        },
-      });
+  const dlqJob = await notificationDlq.add("dead-letter-event", dlqData, {
+    removeOnComplete: false,
+    removeOnFail: false,
+  });
 
-      // Simulation of delivery logic across channels
-      // In production, delegate to AWS SES, Twilio, Firebase Cloud Messaging, or Axios Webhook
-      if (recipient.includes("simulate-failure@fail.com")) {
-        throw new Error("Simulated dispatch failure for testing retry mechanisms");
-      }
-
-      // Mark as DELIVERED
-      await prisma.notification.update({
-        where: { id: notificationId },
-        data: {
-          status: "DELIVERED",
-          deliveredAt: new Date(),
-          auditLogs: {
-            create: {
-              fromStatus: "PROCESSING",
-              toStatus: "DELIVERED",
-              event: "DISPATCH_SUCCESS",
-              details: { channel, recipient, jobId: job.id },
-            },
-          },
-        },
-      });
-
-      // If part of a batch, increment successful counter
-      if (job.data.batchId) {
-        await prisma.batchDispatch.update({
-          where: { id: job.data.batchId },
-          data: {
-            processedItems: { increment: 1 },
-            successfulItems: { increment: 1 },
-          },
-        });
-      }
-
-      return { success: true, deliveredAt: new Date().toISOString() };
-    },
-    {
-      connection: redisConnection,
-      concurrency: 10,
-    },
-  );
-
-  worker.on("failed", async (job, err) => {
-    if (!job) return;
-    const { notificationId, batchId } = job.data;
-    const isExhausted = job.attemptsMade >= (job.opts.attempts || 3);
-
-    await prisma.notification.update({
-      where: { id: notificationId },
-      data: {
-        status: isExhausted ? "FAILED" : "QUEUED",
-        retryCount: job.attemptsMade,
-        lastError: err.message,
-        auditLogs: {
-          create: {
-            fromStatus: "PROCESSING",
-            toStatus: isExhausted ? "FAILED" : "QUEUED",
-            event: isExhausted ? "MAX_RETRIES_EXHAUSTED" : "RETRY_SCHEDULED",
-            details: { error: err.message, attemptsMade: job.attemptsMade },
+  // Update notification state in DB with DLQ audit trail
+  await prisma.notification.update({
+    where: { id: job.data.notificationId },
+    data: {
+      status: "FAILED",
+      retryCount: job.attemptsMade,
+      lastError: error.message,
+      auditLogs: {
+        create: {
+          fromStatus: "PROCESSING",
+          toStatus: "FAILED",
+          event: "MOVED_TO_DLQ",
+          details: {
+            dlqJobId: dlqJob.id,
+            attemptsMade: job.attemptsMade,
+            error: error.message,
           },
         },
       },
-    });
-
-    if (batchId && isExhausted) {
-      await prisma.batchDispatch.update({
-        where: { id: batchId },
-        data: {
-          processedItems: { increment: 1 },
-          failedItems: { increment: 1 },
-        },
-      });
-    }
+    },
   });
 
-  return worker;
+  // If part of a batch, increment failed items
+  if (job.data.batchId) {
+    await prisma.batchDispatch.update({
+      where: { id: job.data.batchId },
+      data: {
+        processedItems: { increment: 1 },
+        failedItems: { increment: 1 },
+      },
+    });
+  }
+
+  return dlqJob;
+}
+
+export async function replayDlqJob(dlqJobId: string): Promise<Job<NotificationJobData>> {
+  const dlqJob = await notificationDlq.getJob(dlqJobId);
+  if (!dlqJob) {
+    throw new Error(`DLQ Job with ID '${dlqJobId}' not found`);
+  }
+
+  const {
+    originalJobId: _,
+    failedAt: __,
+    attemptsMade: ___,
+    lastError: ____,
+    ...notificationData
+  } = dlqJob.data;
+
+  // Re-enqueue into main queue
+  const replayedJob = await notificationQueue.add("dispatch-event", notificationData, {
+    priority: 2, // High priority for replayed items
+  });
+
+  // Remove from DLQ
+  await dlqJob.remove();
+
+  // Audit trail
+  await prisma.notification.update({
+    where: { id: notificationData.notificationId },
+    data: {
+      status: "QUEUED",
+      auditLogs: {
+        create: {
+          fromStatus: "FAILED",
+          toStatus: "QUEUED",
+          event: "REPLAYED_FROM_DLQ",
+          details: { oldDlqJobId: dlqJobId, newJobId: replayedJob.id },
+        },
+      },
+    },
+  });
+
+  return replayedJob;
 }

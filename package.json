@@ -6,8 +6,10 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
+    "worker": "tsx src/workers/notification.worker.ts",
     "build": "tsup",
     "start": "node dist/server.js",
+    "start:worker": "node dist/workers/notification.worker.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
