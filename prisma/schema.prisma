@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Channel {
+  EMAIL
+  SMS
+  PUSH
+  WEBHOOK
+}
+
+enum NotificationStatus {
+  PENDING
+  QUEUED
+  PROCESSING
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum NotificationPriority {
+  LOW
+  NORMAL
+  HIGH
+  CRITICAL
+}
+
+enum BatchStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  PARTIALLY_FAILED
+  FAILED
+}
+
+model BatchDispatch {
+  id              String      @id @default(uuid())
+  totalItems      Int         @default(0)
+  processedItems  Int         @default(0)
+  successfulItems Int         @default(0)
+  failedItems     Int         @default(0)
+  status          BatchStatus @default(PENDING)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  notifications Notification[]
+
+  @@map("batch_dispatches")
+}
+
+model Notification {
+  id           String               @id @default(uuid())
+  batchId      String?              @map("batch_id")
+  channel      Channel
+  recipient    String
+  subject      String?
+  content      String
+  metadata     Json?
+  priority     NotificationPriority @default(NORMAL)
+  status       NotificationStatus   @default(PENDING)
+  retryCount   Int                  @default(0) @map("retry_count")
+  maxRetries   Int                  @default(3) @map("max_retries")
+  lastError    String?              @map("last_error")
+  scheduledAt  DateTime?            @map("scheduled_at")
+  deliveredAt  DateTime?            @map("delivered_at")
+  createdAt    DateTime             @default(now()) @map("created_at")
+  updatedAt    DateTime             @updatedAt @map("updated_at")
+
+  batch        BatchDispatch?       @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  auditLogs    NotificationAuditLog[]
+
+  @@index([status])
+  @@index([channel])
+  @@index([recipient])
+  @@index([createdAt])
+  @@index([batchId])
+  @@map("notifications")
+}
+
+model NotificationAuditLog {
+  id             String              @id @default(uuid())
+  notificationId String              @map("notification_id")
+  fromStatus     NotificationStatus? @map("from_status")
+  toStatus       NotificationStatus  @map("to_status")
+  event          String
+  details        Json?
+  createdAt      DateTime            @default(now()) @map("created_at")
+
+  notification   Notification        @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@index([notificationId])
+  @@index([createdAt])
+  @@map("notification_audit_logs")
+}

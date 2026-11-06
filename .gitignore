@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Production build
+dist/
+build/
+
+# Coverage directory used by tools like istanbul or vitest
+coverage/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# AI Tooling & Local Prompts (Never Commit to Public Repos)
+.agents/
+.agent/
+.agentrules
+.claude/
+CLAUDE.md
+AGENTS.md
+implementation_plan.md
+RELATORIO_*.md
+EXPLICACAO_*.txt
+SKILLS-*.md
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Prisma
+dev.db
+dev.db-journal
