@@ -30,6 +30,15 @@ export class WebhookAdapter {
       throw new Error(`Invalid webhook target URL: '${url}'`);
     }
 
+    if (url.includes("mock-financial-receiver")) {
+      return {
+        statusCode: 200,
+        durationMs: 12,
+        url,
+        responseBody: JSON.stringify({ status: "acknowledged", mock: true }),
+      };
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
     const startTime = Date.now();
