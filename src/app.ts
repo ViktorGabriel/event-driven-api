@@ -19,7 +19,9 @@ export async function buildApp(): Promise<FastifyInstance> {
     logger:
       env.NODE_ENV === "test"
         ? false
-        : {
+        : env.NODE_ENV === "production"
+          ? true
+          : {
             transport: {
               target: "pino-pretty",
               options: {
