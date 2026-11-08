@@ -36,3 +36,7 @@ Thumbs.db
 # Prisma
 dev.db
 dev.db-journal
+
+.agentrules
+.agents/
+.agent/
